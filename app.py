@@ -8,12 +8,17 @@ import requests
 import urllib3
 from flask import Flask
 
-# העלמת אזהרות
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
+# --- זה התיקון החדש עבור ה-KEEP ALIVE ---
+@app.route('/')
+def home():
+    return "Server is awake!", 200
+
+# --- המשימה הכבדה של הסנכרון ---
 @app.route('/daily-sync')
 def daily_sync():
     try:
@@ -86,7 +91,6 @@ def daily_sync():
         page_no = 1
         all_rows_content = []
         while True:
-            # התיקון שלנו נמצא כאן - הוספת 'Accept-Language': 'en-US'
             export_res = session.get(
                 'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
                 headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
