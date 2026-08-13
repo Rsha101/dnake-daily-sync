@@ -6,7 +6,6 @@ import datetime
 import openpyxl
 import requests
 import urllib3
-import zipfile
 from flask import Flask
 
 # העלמת אזהרות
@@ -76,9 +75,10 @@ def daily_sync():
             verify=False
         )
         
-        token = login_res.json().get('data', {}).get('accessToken')
+        login_data = login_res.json()
+        token = login_data.get('data', {}).get('accessToken') or login_data.get('token')
         if not token: 
-            print("-> ERROR: Login failed!")
+            print(f"-> ERROR: Login failed! Response: {login_data}")
             raise Exception("Login failed")
         print("-> Logged in successfully!")
 
@@ -92,7 +92,17 @@ def daily_sync():
                 params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
                 verify=False
             )
-            print(f"-> Downloaded page {page_no}. File size: {len(export_res.content)} bytes.")
+            
+            content_size = len(export_res.content)
+            print(f"-> Downloaded page {page_no}. File size: {content_size} bytes.")
+            
+            # בדיקה האם השרת שלח הודעת שגיאה במקום קובץ אקסל
+            if content_size < 500:
+                print(f"-> DNAKE API RESPONSE: {export_res.text}")
+                if "code" in export_res.text or content_size < 10: 
+                    print("-> Skipping this page because it's an error message or empty.")
+                    break
+
             temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
             with open(temp_filename, "wb") as f: f.write(export_res.content)
             
@@ -114,26 +124,27 @@ def daily_sync():
         print(f"4. Syncing {len(all_rows_content)} rows to Monday...")
         sent_count = 0
         skipped_count = 0
-        for row in all_rows_content[1:]:
-            if not row or len(row) < 6 or row[5] is None: continue
-            
-            user_name = str(row[5]).strip()
-            raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
-            
-            if f"{user_name}_{raw_date}" in existing_records: 
-                skipped_count += 1
-                continue
+        if len(all_rows_content) > 1:
+            for row in all_rows_content[1:]:
+                if not row or len(row) < 6 or row[5] is None: continue
+                
+                user_name = str(row[5]).strip()
+                raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
+                
+                if f"{user_name}_{raw_date}" in existing_records: 
+                    skipped_count += 1
+                    continue
 
-            print(f"-> Sending new item: {user_name} ({raw_date})")
-            query = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
-            vars = {"boardId": BOARD_ID, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
-            
-            res = requests.post(monday_url, json={"query": query, "variables": vars}, headers=monday_headers, verify=False)
-            if "errors" not in res.text:
-                sent_count += 1
-                existing_records.add(f"{user_name}_{raw_date}")
-            else:
-                print(f"-> ERROR from Monday for {user_name}: {res.text}")
+                print(f"-> Sending new item: {user_name} ({raw_date})")
+                query = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
+                vars = {"boardId": BOARD_ID, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
+                
+                res = requests.post(monday_url, json={"query": query, "variables": vars}, headers=monday_headers, verify=False)
+                if "errors" not in res.text:
+                    sent_count += 1
+                    existing_records.add(f"{user_name}_{raw_date}")
+                else:
+                    print(f"-> ERROR from Monday for {user_name}: {res.text}")
 
         result_msg = f"Sync complete! Added {sent_count} items. Skipped {skipped_count} duplicates."
         print(result_msg)
