@@ -86,9 +86,10 @@ def daily_sync():
         page_no = 1
         all_rows_content = []
         while True:
+            # התיקון שלנו נמצא כאן - הוספת 'Accept-Language': 'en-US'
             export_res = session.get(
                 'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
-                headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0'},
+                headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
                 params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
                 verify=False
             )
@@ -96,7 +97,6 @@ def daily_sync():
             content_size = len(export_res.content)
             print(f"-> Downloaded page {page_no}. File size: {content_size} bytes.")
             
-            # בדיקה האם השרת שלח הודעת שגיאה במקום קובץ אקסל
             if content_size < 500:
                 print(f"-> DNAKE API RESPONSE: {export_res.text}")
                 if "code" in export_res.text or content_size < 10: 
