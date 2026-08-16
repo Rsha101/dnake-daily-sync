@@ -35,13 +35,11 @@ def morning_setup():
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
         
-        # שינוי הפורמט לתאריך מלא כדי למנוע כפילויות בין חודשים (למשל: 16/08/2026)
         item_name = now.strftime("%d/%m/%Y")
         
         print(f"--- STARTING MORNING SETUP FOR DAY {item_name} ---")
         monday_url = "https://api.monday.com/v2"
         
-        # בדיקה האם כבר קיימת שורה עם התאריך של היום
         query_check = '''
         query {
           boards(ids: %s) {
@@ -60,7 +58,6 @@ def morning_setup():
                 print("-> Row already exists for today. Skipping creation.")
                 return f"Row '{item_name}' already exists in stats board.", 200
 
-        # אם השורה לא קיימת - יוצרים אותה
         print("-> Creating new row for today...")
         query_create = 'mutation ($boardId: ID!, $itemName: String!) { create_item (board_id: $boardId, item_name: $itemName) { id } }'
         vars_create = {"boardId": BOARD_STATS, "itemName": item_name}
@@ -90,11 +87,11 @@ def daily_sync():
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
         
-        # שימוש באותו פורמט תאריך מלא כמו בבוקר
         today_name = now.strftime("%d/%m/%Y")
         
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_ts = int(start_of_day.timestamp() * 1000)
+        # כדי לעקוף בעיות אזור זמן של שרת DNAKE, מושכים 48 שעות ומסננים בפנים
+        last_run_datetime = now - datetime.timedelta(days=2)
+        start_ts = int(last_run_datetime.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
         
         print(f"--- STARTING DAILY SYNC (EVENING) FOR {today_name} ---")
@@ -113,8 +110,8 @@ def daily_sync():
         if not token: raise Exception("DNAKE Login failed")
         print("-> Logged in successfully!")
 
-        # שלב ב': הורדת הלוגים של היום בלבד
-        print("2. Downloading Today's Logs...")
+        # שלב ב': הורדת הלוגים 
+        print("2. Downloading Logs (last 48 hours for safety)...")
         page_no = 1
         all_rows_content = []
         while True:
@@ -143,18 +140,26 @@ def daily_sync():
                 if os.path.exists(temp_filename): os.remove(temp_filename)
                 break
 
-        # שלב ג': שליחת שמות ליומן כניסות + ספירה מקומית
-        print(f"3. Syncing {len(all_rows_content)} rows to Monday (Logs Board)...")
+        # שלב ג': שליחת שמות ליומן כניסות + ספירה מקומית (סינון רק להיום!)
+        print(f"3. Syncing valid rows to Monday (Logs Board)...")
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
         sent_count = 0
+        
+        # מחלצים את התאריך של היום בפורמט שהאקסל מספק, למשל: 2026-08-16
+        today_date_excel_format = now.strftime("%Y-%m-%d")
         
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
                 
-                user_name = str(row[5]).strip()
                 raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
+                
+                # *** החלק החשוב: מוודאים שהשורה היא מהיום בלבד! ***
+                if raw_date != today_date_excel_format:
+                    continue
+                
+                user_name = str(row[5]).strip()
                 
                 if user_name in seen_today: continue
 
@@ -167,7 +172,7 @@ def daily_sync():
                     seen_today.add(user_name) 
                     
         total_unique_visitors = len(seen_today)
-        print(f"-> Sent {sent_count} names to Logs Board. Total Unique Visitors: {total_unique_visitors}")
+        print(f"-> Sent {sent_count} names to Logs Board. Total Unique Visitors for today: {total_unique_visitors}")
 
         # שלב ד': עדכון מספר היזמים בלוח הסטטיסטיקה של הבוקר
         print("4. Updating Daily Stats Board...")
