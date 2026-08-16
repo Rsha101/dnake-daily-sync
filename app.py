@@ -35,17 +35,17 @@ def morning_setup():
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
         
-        # השם של השורה יהיה פשוט היום בחודש (למשל "16" או "17") כדי שיתאים למה שאתם רגילים
-        item_name = str(now.day) 
+        # שינוי הפורמט לתאריך מלא כדי למנוע כפילויות בין חודשים (למשל: 16/08/2026)
+        item_name = now.strftime("%d/%m/%Y")
         
         print(f"--- STARTING MORNING SETUP FOR DAY {item_name} ---")
         monday_url = "https://api.monday.com/v2"
         
-        # בדיקה האם כבר קיימת שורה עם התאריך של היום (למקרה שהרצנו פעמיים)
+        # בדיקה האם כבר קיימת שורה עם התאריך של היום
         query_check = '''
         query {
           boards(ids: %s) {
-            items_page(limit: 20) {
+            items_page(limit: 50) {
               items { id name }
             }
           }
@@ -89,13 +89,15 @@ def daily_sync():
 
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
-        today_name = str(now.day)
+        
+        # שימוש באותו פורמט תאריך מלא כמו בבוקר
+        today_name = now.strftime("%d/%m/%Y")
         
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start_ts = int(start_of_day.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
         
-        print("--- STARTING DAILY SYNC (EVENING) ---")
+        print(f"--- STARTING DAILY SYNC (EVENING) FOR {today_name} ---")
         
         # שלב א': התחברות ל-DNAKE
         print("1. Logging in to DNAKE API...")
@@ -123,7 +125,7 @@ def daily_sync():
                 verify=False
             )
             content_size = len(export_res.content)
-            if content_size < 500: break # קובץ ריק או שגיאה
+            if content_size < 500: break 
             
             temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
             with open(temp_filename, "wb") as f: f.write(export_res.content)
@@ -170,9 +172,8 @@ def daily_sync():
         # שלב ד': עדכון מספר היזמים בלוח הסטטיסטיקה של הבוקר
         print("4. Updating Daily Stats Board...")
         
-        # מחפשים את השורה של היום
         query_find = '''
-        query { boards(ids: %s) { items_page(limit: 15) { items { id name } } } }
+        query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }
         ''' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -183,20 +184,18 @@ def daily_sync():
                 today_item_id = item.get('id')
                 break
                 
-        # אם מישהו בטעות מחק את השורה של הבוקר, ניצור אותה מחדש עכשיו
         if not today_item_id:
             print("-> Morning row not found! Creating it now...")
             query_create = 'mutation ($boardId: ID!, $itemName: String!) { create_item (board_id: $boardId, item_name: $itemName) { id } }'
             res_create = requests.post(monday_url, json={"query": query_create, "variables": {"boardId": BOARD_STATS, "itemName": today_name}}, headers=get_monday_headers(), verify=False)
             today_item_id = res_create.json().get('data', {}).get('create_item', {}).get('id')
 
-        # עדכון העמודה המספרית
         if today_item_id:
             query_update = 'mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id } }'
             vars_update = {
                 "boardId": BOARD_STATS, 
                 "itemId": today_item_id, 
-                "columnValues": json.dumps({"numeric_mm69bgft": total_unique_visitors})
+                "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})
             }
             res_update = requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
             
