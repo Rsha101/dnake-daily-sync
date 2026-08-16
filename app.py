@@ -64,9 +64,11 @@ def daily_sync():
         today_name = now.strftime("%d/%m/%Y")
         today_date_excel_format = now.strftime("%Y-%m-%d")
         
-        last_run_datetime = now - datetime.timedelta(days=2)
-        start_ts = int(last_run_datetime.timestamp() * 1000)
+        # --- כאן החזרנו את משיכת הנתונים לתאריך של היום בלבד (מ-00:00:00) ---
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_ts = int(start_of_day.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
+        # -------------------------------------------------------------------
         
         session = requests.Session()
         login_res = session.post(
@@ -82,10 +84,9 @@ def daily_sync():
         page_no = 1
         all_rows_content = []
         
-        # --- כאן מתבצעת הבדיקה הקריטית ---
         export_res = session.get(
             'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
-            headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0'},
+            headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
             params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
             verify=False
         )
@@ -104,9 +105,7 @@ def daily_sync():
             all_rows_content.extend(rows)
         except Exception as ex:
             if os.path.exists(temp_filename): os.remove(temp_filename)
-            # אם הקובץ שבור, נדפיס את השגיאה ונראה מה באמת ירד!
             return f"DEBUG ERROR: Failed to open Excel file! Error: {str(ex)}. Downloaded size: {content_size} bytes. File start: {export_res.content[:50]}", 200
-        # ------------------------------------
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
