@@ -13,12 +13,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
-# --- זה התיקון החדש עבור ה-KEEP ALIVE ---
+# --- נשאר ללא שינוי, מצוין כדי להשאיר את השרת ער ---
 @app.route('/')
 def home():
     return "Server is awake!", 200
 
-# --- המשימה הכבדה של הסנכרון ---
+# --- המשימה של הסנכרון היומי ---
 @app.route('/daily-sync')
 def daily_sync():
     try:
@@ -33,45 +33,16 @@ def daily_sync():
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
         
-        print("--- STARTING SYNC ---")
-        print("1. Fetching existing items from Monday...")
-        monday_url = "https://api.monday.com/v2"
-        monday_headers = {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2023-10"}
+        # חישוב תחילת היום (00:00:00) של התאריך הנוכחי
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        query_existing = '''
-        query {
-          boards(ids: %s) {
-            items_page(limit: 500) {
-              items {
-                name
-                column_values(ids: ["date_mm0kk5yt"]) {
-                  text
-                }
-              }
-            }
-          }
-        }
-        ''' % BOARD_ID
-        
-        res_monday = requests.post(monday_url, json={"query": query_existing}, headers=monday_headers, verify=False)
-        existing_records = set()
-        
-        if res_monday.status_code == 200:
-            data = res_monday.json()
-            items = data.get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
-            for item in items:
-                item_name = item.get('name', '').strip()
-                cols = item.get('column_values', [])
-                item_date = cols[0]['text'] if cols else ''
-                if item_name and item_date:
-                    existing_records.add(f"{item_name}_{item_date}")
-        print(f"-> Found {len(existing_records)} existing records in Monday.")
-
-        last_run_datetime = now - datetime.timedelta(days=2)
-        start_ts = int(last_run_datetime.timestamp() * 1000)
+        start_ts = int(start_of_day.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
-
-        print("2. Logging in to DNAKE API...")
+        
+        print("--- STARTING DAILY SYNC ---")
+        
+        # שלב 1: התחברות ל-DNAKE
+        print("1. Logging in to DNAKE API...")
         session = requests.Session()
         login_res = session.post(
             'https://eu-api-cloud.ss-iot.com/admin-api/system/auth/login', 
@@ -87,7 +58,8 @@ def daily_sync():
             raise Exception("Login failed")
         print("-> Logged in successfully!")
 
-        print("3. Downloading Logs...")
+        # שלב 2: הורדת הלוגים של היום בלבד
+        print("2. Downloading Today's Logs...")
         page_no = 1
         all_rows_content = []
         while True:
@@ -125,9 +97,16 @@ def daily_sync():
                 if os.path.exists(temp_filename): os.remove(temp_filename)
                 break
 
-        print(f"4. Syncing {len(all_rows_content)} rows to Monday...")
+        # שלב 3: סנכרון למאנדיי (עם סינון כפילויות מקומי)
+        print(f"3. Syncing {len(all_rows_content)} rows to Monday...")
+        
+        monday_url = "https://api.monday.com/v2"
+        monday_headers = {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2023-10"}
+        
+        seen_today = set() # קבוצה לשמירת מי שכבר הוספנו היום
         sent_count = 0
         skipped_count = 0
+        
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
@@ -135,7 +114,8 @@ def daily_sync():
                 user_name = str(row[5]).strip()
                 raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
                 
-                if f"{user_name}_{raw_date}" in existing_records: 
+                # אם היזם כבר הוכנס היום, דלג עליו (מונע כפילויות של כניסות באותו יום)
+                if user_name in seen_today: 
                     skipped_count += 1
                     continue
 
@@ -144,13 +124,14 @@ def daily_sync():
                 vars = {"boardId": BOARD_ID, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
                 
                 res = requests.post(monday_url, json={"query": query, "variables": vars}, headers=monday_headers, verify=False)
+                
                 if "errors" not in res.text:
                     sent_count += 1
-                    existing_records.add(f"{user_name}_{raw_date}")
+                    seen_today.add(user_name) # הוספה לרשימת "כבר ראינו אותו היום"
                 else:
                     print(f"-> ERROR from Monday for {user_name}: {res.text}")
 
-        result_msg = f"Sync complete! Added {sent_count} items. Skipped {skipped_count} duplicates."
+        result_msg = f"Sync complete! Added {sent_count} items. Skipped {skipped_count} local duplicates."
         print(result_msg)
         return result_msg, 200
 
