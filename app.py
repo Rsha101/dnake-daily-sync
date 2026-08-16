@@ -87,8 +87,13 @@ def daily_sync():
                 params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
                 verify=False
             )
-            if len(export_res.content) < 500: break 
             
+            # --- התיקון הקריטי כאן ---
+            content_size = len(export_res.content)
+            if content_size < 10 or "code" in export_res.text:
+                break 
+            # --------------------------
+
             temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
             with open(temp_filename, "wb") as f: f.write(export_res.content)
             
@@ -108,14 +113,14 @@ def daily_sync():
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
         sent_count = 0
-        debug_dates_found = set() # נשמור כאן את כל התאריכים שראינו כדי שנוכל להדפיס אותם
+        debug_dates_found = set()
         
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
                 
                 raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
-                debug_dates_found.add(raw_date) # שומרים את התאריך לצורכי דיבאג
+                debug_dates_found.add(raw_date) 
                 
                 if raw_date != today_date_excel_format:
                     continue
@@ -133,7 +138,6 @@ def daily_sync():
                     
         total_unique_visitors = len(seen_today)
         
-        # --- בלוק הדיווח והדיבאג החדש ---
         if total_unique_visitors == 0:
             debug_msg = (f"DEBUG INFO: Expected date: {today_date_excel_format}. "
                          f"Total rows in Excel: {len(all_rows_content)}. "
@@ -141,7 +145,6 @@ def daily_sync():
             print(debug_msg)
             return debug_msg, 200
 
-        # עדכון מאנדיי (סטטיסטיקה)
         query_find = 'query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
