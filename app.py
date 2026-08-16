@@ -76,39 +76,37 @@ def daily_sync():
             verify=False
         )
         token = login_res.json().get('data', {}).get('accessToken') or login_res.json().get('token')
-        if not token: raise Exception("DNAKE Login failed")
+        if not token: 
+            return f"DEBUG ERROR: DNAKE Login failed. Response: {login_res.text}", 200
 
         page_no = 1
         all_rows_content = []
-        while True:
-            export_res = session.get(
-                'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
-                headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0'},
-                params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
-                verify=False
-            )
-            
-            # --- התיקון הקריטי כאן ---
-            content_size = len(export_res.content)
-            if content_size < 10 or "code" in export_res.text:
-                break 
-            # --------------------------
-
-            temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
-            with open(temp_filename, "wb") as f: f.write(export_res.content)
-            
-            try:
-                wb = openpyxl.load_workbook(temp_filename)
-                rows = list(wb.active.iter_rows(values_only=True))
-                os.remove(temp_filename)
-                if not rows: break
-                if page_no == 1: all_rows_content.extend(rows)
-                else: all_rows_content.extend(rows[1:])
-                if len(rows) < 1000: break
-                page_no += 1
-            except Exception:
-                if os.path.exists(temp_filename): os.remove(temp_filename)
-                break
+        
+        # --- כאן מתבצעת הבדיקה הקריטית ---
+        export_res = session.get(
+            'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
+            headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0'},
+            params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
+            verify=False
+        )
+        
+        content_size = len(export_res.content)
+        if content_size < 150 or "code" in export_res.text:
+            return f"DEBUG ERROR: DNAKE API returned an error or empty data. Size: {content_size} bytes. Content: {export_res.text}", 200
+        
+        temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
+        with open(temp_filename, "wb") as f: f.write(export_res.content)
+        
+        try:
+            wb = openpyxl.load_workbook(temp_filename)
+            rows = list(wb.active.iter_rows(values_only=True))
+            os.remove(temp_filename)
+            all_rows_content.extend(rows)
+        except Exception as ex:
+            if os.path.exists(temp_filename): os.remove(temp_filename)
+            # אם הקובץ שבור, נדפיס את השגיאה ונראה מה באמת ירד!
+            return f"DEBUG ERROR: Failed to open Excel file! Error: {str(ex)}. Downloaded size: {content_size} bytes. File start: {export_res.content[:50]}", 200
+        # ------------------------------------
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
@@ -140,9 +138,8 @@ def daily_sync():
         
         if total_unique_visitors == 0:
             debug_msg = (f"DEBUG INFO: Expected date: {today_date_excel_format}. "
-                         f"Total rows in Excel: {len(all_rows_content)}. "
+                         f"Total rows successfully extracted: {len(all_rows_content)}. "
                          f"Dates actually found in Excel: {list(debug_dates_found)}")
-            print(debug_msg)
             return debug_msg, 200
 
         query_find = 'query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }' % BOARD_STATS
