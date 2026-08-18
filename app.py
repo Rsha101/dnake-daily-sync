@@ -81,8 +81,8 @@ def daily_sync():
 
         page_no = 1
         all_rows_content = []
+        api_status = "OK"
         
-        # *** השינוי המרכזי כאן: הורדנו את ה-unlockWay=1 כדי למשוך את כל אמצעי הפתיחה (צ'יפ, אפליקציה, וכו') ***
         export_res = session.get(
             'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
             headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
@@ -93,7 +93,7 @@ def daily_sync():
         content_size = len(export_res.content)
         
         if "derived no data" in export_res.text:
-            print("No visitors in range (DNAKE returned 'derived no data').")
+            api_status = "DERIVED NO DATA (DNAKE claims there are 0 logs in the last 48 hours!)"
         elif content_size < 150 or "code" in export_res.text:
             return f"DEBUG ERROR: DNAKE API returned an error. Size: {content_size} bytes. Content: {export_res.text}", 200
         else:
@@ -112,19 +112,22 @@ def daily_sync():
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
         sent_count = 0
-        names_found_in_dnake_today = set() # רשימת מעקב לדיבאג
+        names_found_in_dnake_today = set()
+        debug_dates_found_total = set()
         
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
-                if not row or len(row) < 6 or row[5] is None: continue
+                if not row or len(row) < 6 or row[0] is None: continue
                 
                 raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
+                debug_dates_found_total.add(raw_date)
                 
                 if raw_date != today_date_excel_format:
                     continue
                 
+                if row[5] is None: continue
                 user_name = str(row[5]).strip()
-                names_found_in_dnake_today.add(user_name) # שומרים כל שם שמצאנו היום
+                names_found_in_dnake_today.add(user_name) 
                 
                 if user_name in seen_today: continue
 
@@ -158,8 +161,15 @@ def daily_sync():
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        # הוספנו את רשימת השמות להודעת הסיום
-        result_msg = f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors. Names found today in DNAKE: {list(names_found_in_dnake_today)}"
+        # יצירת הדו"ח הסופי
+        result_msg = (
+            f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors.\n\n"
+            f"--- DEBUG REPORT ---\n"
+            f"DNAKE API Status: {api_status}\n"
+            f"Total rows downloaded (last 48h): {len(all_rows_content)}\n"
+            f"All dates found in file: {list(debug_dates_found_total)}\n"
+            f"Names found specifically for today ({today_date_excel_format}): {list(names_found_in_dnake_today)}"
+        )
         return result_msg, 200
 
     except Exception as e:
