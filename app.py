@@ -79,35 +79,53 @@ def daily_sync():
         if not token: 
             return f"DEBUG ERROR: DNAKE Login failed. Response: {login_res.text}", 200
 
-        page_no = 1
         all_rows_content = []
-        api_status = "OK"
+        methods_found = []
         
-        export_res = session.get(
-            'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
-            headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
-            params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts},
-            verify=False
-        )
-        
-        content_size = len(export_res.content)
-        
-        if "derived no data" in export_res.text:
-            api_status = "DERIVED NO DATA (DNAKE claims there are 0 logs in the last 48 hours!)"
-        elif content_size < 150 or "code" in export_res.text:
-            return f"DEBUG ERROR: DNAKE API returned an error. Size: {content_size} bytes. Content: {export_res.text}", 200
-        else:
-            temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
-            with open(temp_filename, "wb") as f: f.write(export_res.content)
-            
-            try:
-                wb = openpyxl.load_workbook(temp_filename)
-                rows = list(wb.active.iter_rows(values_only=True))
-                os.remove(temp_filename)
-                all_rows_content.extend(rows)
-            except Exception as ex:
-                if os.path.exists(temp_filename): os.remove(temp_filename)
-                return f"DEBUG ERROR: Failed to open Excel file! Error: {str(ex)}", 200
+        # *** רצים בלולאה על כל שיטות הפתיחה (1 עד 7) ***
+        for unlock_way in ['1', '2', '3', '4', '5', '6', '7']:
+            page_no = 1
+            while True:
+                export_res = session.get(
+                    'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
+                    headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
+                    params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': unlock_way},
+                    verify=False
+                )
+                
+                content_size = len(export_res.content)
+                
+                if "derived no data" in export_res.text:
+                    break # אין נתונים לשיטת הפתיחה הזו, עוברים לשיטה הבאה
+                elif content_size < 150 or "code" in export_res.text:
+                    break # שגיאה אחרת, פשוט נדלג ונמשיך לסרוק את השאר
+                else:
+                    # מצאנו נתונים! נשמור אותם ונאחד עם השאר
+                    if unlock_way not in methods_found:
+                        methods_found.append(unlock_way)
+                        
+                    temp_filename = os.path.join(output_dir, f"page_{unlock_way}_{page_no}.xlsx")
+                    with open(temp_filename, "wb") as f: f.write(export_res.content)
+                    
+                    try:
+                        wb = openpyxl.load_workbook(temp_filename)
+                        rows = list(wb.active.iter_rows(values_only=True))
+                        os.remove(temp_filename)
+                        
+                        if not rows: break
+                        
+                        # אם זו הפעם הראשונה שאנחנו מוסיפים שורות, נוסיף גם את הכותרת (שורה 0). אחרת נוסיף רק את הנתונים (שורה 1 ומטה).
+                        if len(all_rows_content) == 0:
+                            all_rows_content.extend(rows)
+                        else:
+                            all_rows_content.extend(rows[1:])
+                            
+                        if len(rows) < 1000: break
+                        page_no += 1
+                        
+                    except Exception as ex:
+                        if os.path.exists(temp_filename): os.remove(temp_filename)
+                        break
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
@@ -165,9 +183,8 @@ def daily_sync():
         result_msg = (
             f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors.\n\n"
             f"--- DEBUG REPORT ---\n"
-            f"DNAKE API Status: {api_status}\n"
+            f"Unlock Methods Found with data: {methods_found if methods_found else 'None'}\n"
             f"Total rows downloaded (last 48h): {len(all_rows_content)}\n"
-            f"All dates found in file: {list(debug_dates_found_total)}\n"
             f"Names found specifically for today ({today_date_excel_format}): {list(names_found_in_dnake_today)}"
         )
         return result_msg, 200
