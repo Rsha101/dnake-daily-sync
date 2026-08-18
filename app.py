@@ -64,11 +64,9 @@ def daily_sync():
         today_name = now.strftime("%d/%m/%Y")
         today_date_excel_format = now.strftime("%Y-%m-%d")
         
-        # --- כאן החזרנו את משיכת הנתונים לתאריך של היום בלבד (מ-00:00:00) ---
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start_ts = int(start_of_day.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
-        # -------------------------------------------------------------------
         
         session = requests.Session()
         login_res = session.post(
@@ -92,32 +90,35 @@ def daily_sync():
         )
         
         content_size = len(export_res.content)
-        if content_size < 150 or "code" in export_res.text:
-            return f"DEBUG ERROR: DNAKE API returned an error or empty data. Size: {content_size} bytes. Content: {export_res.text}", 200
         
-        temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
-        with open(temp_filename, "wb") as f: f.write(export_res.content)
-        
-        try:
-            wb = openpyxl.load_workbook(temp_filename)
-            rows = list(wb.active.iter_rows(values_only=True))
-            os.remove(temp_filename)
-            all_rows_content.extend(rows)
-        except Exception as ex:
-            if os.path.exists(temp_filename): os.remove(temp_filename)
-            return f"DEBUG ERROR: Failed to open Excel file! Error: {str(ex)}. Downloaded size: {content_size} bytes. File start: {export_res.content[:50]}", 200
+        # --- כאן תיקנו את ההתייחסות למצב שבו אין כניסות היום ---
+        if "derived no data" in export_res.text:
+            print("No visitors yet today (DNAKE returned 'derived no data'). Proceeding with 0 count.")
+            pass # הרשימה תישאר ריקה והספירה תהיה 0
+        elif content_size < 150 or "code" in export_res.text:
+            return f"DEBUG ERROR: DNAKE API returned an error. Size: {content_size} bytes. Content: {export_res.text}", 200
+        else:
+            temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
+            with open(temp_filename, "wb") as f: f.write(export_res.content)
+            
+            try:
+                wb = openpyxl.load_workbook(temp_filename)
+                rows = list(wb.active.iter_rows(values_only=True))
+                os.remove(temp_filename)
+                all_rows_content.extend(rows)
+            except Exception as ex:
+                if os.path.exists(temp_filename): os.remove(temp_filename)
+                return f"DEBUG ERROR: Failed to open Excel file! Error: {str(ex)}", 200
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
         sent_count = 0
-        debug_dates_found = set()
         
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
                 
                 raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
-                debug_dates_found.add(raw_date) 
                 
                 if raw_date != today_date_excel_format:
                     continue
@@ -134,12 +135,6 @@ def daily_sync():
                     seen_today.add(user_name) 
                     
         total_unique_visitors = len(seen_today)
-        
-        if total_unique_visitors == 0:
-            debug_msg = (f"DEBUG INFO: Expected date: {today_date_excel_format}. "
-                         f"Total rows successfully extracted: {len(all_rows_content)}. "
-                         f"Dates actually found in Excel: {list(debug_dates_found)}")
-            return debug_msg, 200
 
         query_find = 'query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
