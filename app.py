@@ -71,7 +71,6 @@ def daily_sync():
 
         all_records = []
         
-        # הכותרות המדויקות שהעתקנו מהדפדפן שלך
         dnake_headers = {
             'Authorization': f'Bearer {token}', 
             'Project-Id': '2051211421803474944', 
@@ -83,7 +82,6 @@ def daily_sync():
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        # מושכים 5 עמודים (500 רשומות אחרונות) בלי פילטר תאריכים
         for page_no in range(1, 6):
             page_res = session.get(
                 'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/page',
@@ -104,9 +102,8 @@ def daily_sync():
                 all_records.extend(records)
                 
                 if len(records) < 100:
-                    break # הגענו לעמוד האחרון שיש בו נתונים
+                    break
             except Exception as e:
-                print(f"Failed to parse JSON on page {page_no}: {str(e)}")
                 break
 
         monday_url = "https://api.monday.com/v2"
@@ -114,6 +111,9 @@ def daily_sync():
         sent_count = 0
         names_found_in_dnake_today = set()
         debug_dates_found_total = set()
+        
+        # לוקחים דוגמית של הרשומה הראשונה כדי להבין איך DNAKE קוראים לעמודות
+        sample_record = all_records[0] if all_records else "NO RECORDS FOUND"
         
         for rec in all_records:
             ut = rec.get('unlockTime')
@@ -137,7 +137,6 @@ def daily_sync():
                 
             debug_dates_found_total.add(raw_date)
             
-            # הסינון האמיתי קורה כאן - רק אם זה התאריך של היום
             if raw_date != today_date_excel_format:
                 continue
                 
@@ -156,6 +155,7 @@ def daily_sync():
                     
         total_unique_visitors = len(seen_today)
 
+        # עדכון סטטיסטיקה במאנדיי
         query_find = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -179,10 +179,10 @@ def daily_sync():
         result_msg = (
             f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors.\n\n"
             f"--- DEBUG REPORT ---\n"
-            f"API Endpoint Used: DIRECT JSON with cloned Headers\n"
-            f"Total raw records fetched (latest): {len(all_records)}\n"
-            f"Dates found in fetched records: {list(debug_dates_found_total)}\n"
-            f"Names found specifically for today ({today_date_excel_format}): {list(names_found_in_dnake_today)}"
+            f"Total raw records fetched: {len(all_records)}\n"
+            f"SAMPLE RECORD (Look for date and name keys!):\n{json.dumps(sample_record, ensure_ascii=False)}\n\n"
+            f"Dates found: {list(debug_dates_found_total)}\n"
+            f"Names found: {list(names_found_in_dnake_today)}"
         )
         return result_msg, 200
 
