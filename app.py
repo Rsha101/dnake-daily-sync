@@ -34,7 +34,6 @@ def morning_setup():
         item_name = now.strftime("%d/%m/%Y")
         
         monday_url = "https://api.monday.com/v2"
-        # הגדלנו ל-100 כדי לוודא שתמיד נמצא את השורה אם קיימת
         query_check = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_check = requests.post(monday_url, json={"query": query_check}, headers=get_monday_headers(), verify=False)
         items = res_check.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -65,7 +64,6 @@ def daily_sync():
         today_name = now.strftime("%d/%m/%Y")
         today_date_excel_format = now.strftime("%Y-%m-%d")
         
-        # טווח בטוח של 48 שעות אחורה למניעת פספוסים בגלל אזורי זמן של DNAKE
         start_range = now - datetime.timedelta(days=2)
         start_ts = int(start_range.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
@@ -84,10 +82,11 @@ def daily_sync():
         page_no = 1
         all_rows_content = []
         
+        # *** השינוי המרכזי כאן: הורדנו את ה-unlockWay=1 כדי למשוך את כל אמצעי הפתיחה (צ'יפ, אפליקציה, וכו') ***
         export_res = session.get(
             'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
             headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
-            params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts, 'unlockWay': '1'},
+            params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts},
             verify=False
         )
         
@@ -113,8 +112,8 @@ def daily_sync():
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
         sent_count = 0
+        names_found_in_dnake_today = set() # רשימת מעקב לדיבאג
         
-        # סינון קפדני בתוך הפייתון - לוקחים רק רשומות ששייכות להיום בלבד!
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
@@ -125,6 +124,8 @@ def daily_sync():
                     continue
                 
                 user_name = str(row[5]).strip()
+                names_found_in_dnake_today.add(user_name) # שומרים כל שם שמצאנו היום
+                
                 if user_name in seen_today: continue
 
                 query_log = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
@@ -137,7 +138,6 @@ def daily_sync():
                     
         total_unique_visitors = len(seen_today)
 
-        # חיפוש השורה של היום בלוח הסטטיסטיקה (בדיקה של עד 100 שורות)
         query_find = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -148,20 +148,18 @@ def daily_sync():
                 today_item_id = item.get('id')
                 break
                 
-        # אם משום מה השורה לא נמצאה, רק אז ניצור אותה חדשה
         if not today_item_id:
-            print("-> Morning row not found! Creating it now...")
             query_create = 'mutation ($boardId: ID!, $itemName: String!) { create_item (board_id: $boardId, item_name: $itemName) { id } }'
             res_create = requests.post(monday_url, json={"query": query_create, "variables": {"boardId": BOARD_STATS, "itemName": today_name}}, headers=get_monday_headers(), verify=False)
             today_item_id = res_create.json().get('data', {}).get('create_item', {}).get('id')
 
-        # עדכון המספר בשורה הקיימת
         if today_item_id:
             query_update = 'mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id } }'
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        result_msg = f"Evening sync complete! Added {sent_count} names. Updated stats board ({today_name}) with {total_unique_visitors} visitors."
+        # הוספנו את רשימת השמות להודעת הסיום
+        result_msg = f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors. Names found today in DNAKE: {list(names_found_in_dnake_today)}"
         return result_msg, 200
 
     except Exception as e:
