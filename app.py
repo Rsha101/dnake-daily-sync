@@ -71,12 +71,24 @@ def daily_sync():
 
         all_records = []
         
-        # מושכים נתונים ישירות מה-API החי (ללא אקסל) - 5 העמודים האחרונים (500 רשומות)
+        # הכותרות המדויקות שהעתקנו מהדפדפן שלך
+        dnake_headers = {
+            'Authorization': f'Bearer {token}', 
+            'Project-Id': '2051211421803474944', 
+            'Role-Type': '14',
+            'Accept-Language': 'en_US',
+            'Accept': 'application/json, text/plain, */*',
+            'Origin': 'https://eu-cloud.dnake.com',
+            'Referer': 'https://eu-cloud.dnake.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # מושכים 5 עמודים (500 רשומות אחרונות) בלי פילטר תאריכים
         for page_no in range(1, 6):
             page_res = session.get(
                 'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/page',
-                headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
-                params={'pageNo': str(page_no), 'pageSize': '100', 'unlockResult': '0'},
+                headers=dnake_headers,
+                params={'pageNo': str(page_no), 'pageSize': '100', 'unlockResult': '0', 'unlockWay': '1'},
                 verify=False
             )
             
@@ -92,7 +104,7 @@ def daily_sync():
                 all_records.extend(records)
                 
                 if len(records) < 100:
-                    break # הגענו לעמוד האחרון
+                    break # הגענו לעמוד האחרון שיש בו נתונים
             except Exception as e:
                 print(f"Failed to parse JSON on page {page_no}: {str(e)}")
                 break
@@ -103,7 +115,6 @@ def daily_sync():
         names_found_in_dnake_today = set()
         debug_dates_found_total = set()
         
-        # עיבוד הנתונים
         for rec in all_records:
             ut = rec.get('unlockTime')
             user_name = rec.get('userName') or rec.get('personName') or rec.get('name')
@@ -111,12 +122,11 @@ def daily_sync():
             if not ut or not user_name:
                 continue
                 
-            # חילוץ התאריך מתוך הנתון (יכול להיות טקסט או מספר)
             raw_date = None
             if isinstance(ut, str) and '-' in ut:
                 raw_date = ut.split(' ')[0]
             elif isinstance(ut, (int, float)):
-                if ut > 9999999999: # Timestamp במילישניות
+                if ut > 9999999999:
                     dt = datetime.datetime.fromtimestamp(ut / 1000.0)
                 else:
                     dt = datetime.datetime.fromtimestamp(ut)
@@ -127,7 +137,7 @@ def daily_sync():
                 
             debug_dates_found_total.add(raw_date)
             
-            # מסננים רק את היום!
+            # הסינון האמיתי קורה כאן - רק אם זה התאריך של היום
             if raw_date != today_date_excel_format:
                 continue
                 
@@ -136,7 +146,6 @@ def daily_sync():
             
             if user_name in seen_today: continue
 
-            # שליחה למאנדיי (יומן כניסות)
             query_log = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
             vars_log = {"boardId": BOARD_LOGS, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
             
@@ -147,7 +156,6 @@ def daily_sync():
                     
         total_unique_visitors = len(seen_today)
 
-        # עדכון סטטיסטיקה במאנדיי
         query_find = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -168,13 +176,12 @@ def daily_sync():
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        # דו"ח סיום
         result_msg = (
             f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors.\n\n"
             f"--- DEBUG REPORT ---\n"
-            f"API Endpoint Used: DIRECT JSON (Bye bye Excel!)\n"
-            f"Total raw records fetched: {len(all_records)}\n"
-            f"Dates found in recent records: {list(debug_dates_found_total)}\n"
+            f"API Endpoint Used: DIRECT JSON with cloned Headers\n"
+            f"Total raw records fetched (latest): {len(all_records)}\n"
+            f"Dates found in fetched records: {list(debug_dates_found_total)}\n"
             f"Names found specifically for today ({today_date_excel_format}): {list(names_found_in_dnake_today)}"
         )
         return result_msg, 200
