@@ -34,7 +34,8 @@ def morning_setup():
         item_name = now.strftime("%d/%m/%Y")
         
         monday_url = "https://api.monday.com/v2"
-        query_check = 'query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }' % BOARD_STATS
+        # הגדלנו ל-100 כדי לוודא שתמיד נמצא את השורה אם קיימת
+        query_check = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_check = requests.post(monday_url, json={"query": query_check}, headers=get_monday_headers(), verify=False)
         items = res_check.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
         
@@ -64,8 +65,9 @@ def daily_sync():
         today_name = now.strftime("%d/%m/%Y")
         today_date_excel_format = now.strftime("%Y-%m-%d")
         
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_ts = int(start_of_day.timestamp() * 1000)
+        # טווח בטוח של 48 שעות אחורה למניעת פספוסים בגלל אזורי זמן של DNAKE
+        start_range = now - datetime.timedelta(days=2)
+        start_ts = int(start_range.timestamp() * 1000)
         end_ts = int(now.timestamp() * 1000)
         
         session = requests.Session()
@@ -91,10 +93,8 @@ def daily_sync():
         
         content_size = len(export_res.content)
         
-        # --- כאן תיקנו את ההתייחסות למצב שבו אין כניסות היום ---
         if "derived no data" in export_res.text:
-            print("No visitors yet today (DNAKE returned 'derived no data'). Proceeding with 0 count.")
-            pass # הרשימה תישאר ריקה והספירה תהיה 0
+            print("No visitors in range (DNAKE returned 'derived no data').")
         elif content_size < 150 or "code" in export_res.text:
             return f"DEBUG ERROR: DNAKE API returned an error. Size: {content_size} bytes. Content: {export_res.text}", 200
         else:
@@ -114,6 +114,7 @@ def daily_sync():
         seen_today = set() 
         sent_count = 0
         
+        # סינון קפדני בתוך הפייתון - לוקחים רק רשומות ששייכות להיום בלבד!
         if len(all_rows_content) > 1:
             for row in all_rows_content[1:]:
                 if not row or len(row) < 6 or row[5] is None: continue
@@ -136,7 +137,8 @@ def daily_sync():
                     
         total_unique_visitors = len(seen_today)
 
-        query_find = 'query { boards(ids: %s) { items_page(limit: 50) { items { id name } } } }' % BOARD_STATS
+        # חיפוש השורה של היום בלוח הסטטיסטיקה (בדיקה של עד 100 שורות)
+        query_find = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
         
@@ -146,17 +148,20 @@ def daily_sync():
                 today_item_id = item.get('id')
                 break
                 
+        # אם משום מה השורה לא נמצאה, רק אז ניצור אותה חדשה
         if not today_item_id:
+            print("-> Morning row not found! Creating it now...")
             query_create = 'mutation ($boardId: ID!, $itemName: String!) { create_item (board_id: $boardId, item_name: $itemName) { id } }'
             res_create = requests.post(monday_url, json={"query": query_create, "variables": {"boardId": BOARD_STATS, "itemName": today_name}}, headers=get_monday_headers(), verify=False)
             today_item_id = res_create.json().get('data', {}).get('create_item', {}).get('id')
 
+        # עדכון המספר בשורה הקיימת
         if today_item_id:
             query_update = 'mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id } }'
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        result_msg = f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors."
+        result_msg = f"Evening sync complete! Added {sent_count} names. Updated stats board ({today_name}) with {total_unique_visitors} visitors."
         return result_msg, 200
 
     except Exception as e:
