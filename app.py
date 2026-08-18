@@ -19,12 +19,10 @@ PASSWORD = "Rr304050!"
 def get_monday_headers():
     return {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2023-10"}
 
-# --- 1. משימת התעוררות (Keep-alive) ---
 @app.route('/')
 def home():
     return "Server is awake!", 200
 
-# --- 2. משימת בוקר (Morning Setup): רק פותחת שורה לתאריך ---
 @app.route('/morning-setup')
 def morning_setup():
     try:
@@ -33,7 +31,6 @@ def morning_setup():
         item_name = now.strftime("%d/%m/%Y")
         
         monday_url = "https://api.monday.com/v2"
-        # מחפשים ב-500 השורות האחרונות כדי לא לפספס וליצור כפילות
         query_check = 'query { boards(ids: %s) { items_page(limit: 500) { items { id name } } } }' % BOARD_STATS
         res_check = requests.post(monday_url, json={"query": query_check}, headers=get_monday_headers(), verify=False)
         items = res_check.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -52,7 +49,6 @@ def morning_setup():
     except Exception as e:
         return f"Error: {str(e)}", 500
 
-# --- 3. משימת ערב (Daily Sync): סופרת יזמי QR ומעדכנת את שורת הבוקר ---
 @app.route('/daily-sync')
 def daily_sync():
     try:
@@ -85,7 +81,6 @@ def daily_sync():
             'User-Agent': 'Mozilla/5.0'
         }
         
-        # מושכים נתוני DNAKE - רק QR (1)
         for page_no in range(1, 6):
             page_res = session.get(
                 'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/page',
@@ -103,6 +98,31 @@ def daily_sync():
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
+        
+        # --- הפתרון: משיכת השורות שכבר קיימות במאנדיי להיום ---
+        try:
+            query_logs = 'query { boards(ids: %s) { items_page(limit: 500) { items { name column_values { id value } } } } }' % BOARD_LOGS
+            res_logs = requests.post(monday_url, json={"query": query_logs}, headers=get_monday_headers(), verify=False)
+            items_logs = res_logs.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
+            
+            for item in items_logs:
+                item_name = item.get('name')
+                if not item_name: continue
+                
+                for col in item.get('column_values', []):
+                    if col.get('id') == 'date_mm0kk5yt':
+                        val_str = col.get('value')
+                        if val_str:
+                            try:
+                                val_dict = json.loads(val_str)
+                                if val_dict and val_dict.get('date') == today_date_excel_format:
+                                    seen_today.add(item_name.strip())
+                            except: pass
+                        break
+        except Exception as e:
+            print(f"Error checking existing logs: {str(e)}")
+        # -----------------------------------------------------
+
         sent_count = 0
         
         for rec in all_records:
@@ -120,12 +140,15 @@ def daily_sync():
             if raw_date != today_date_excel_format: continue
                 
             user_name = str(user_name).strip()
+            
+            # בדיקה האם היזם כבר קיים במאנדיי מהיום
             if user_name in seen_today: continue
 
-            # מוסיף ליומן שמות פרטני
+            # אם לא, פותחים שורה חדשה ביומן הכניסות
             query_log = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
             vars_log = {"boardId": BOARD_LOGS, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
             res = requests.post(monday_url, json={"query": query_log, "variables": vars_log}, headers=get_monday_headers(), verify=False)
+            
             if "errors" not in res.text:
                 sent_count += 1
                 seen_today.add(user_name) 
@@ -143,19 +166,19 @@ def daily_sync():
                 today_item_id = item.get('id')
                 break
                 
-        # גיבוי: רק אם השורה לא נוצרה בבוקר, ניצור אותה עכשיו
+        # אם השורה לא קיימת בלוח הסטטיסטיקה, הוא ייצור אותה
         if not today_item_id:
             query_create = 'mutation ($boardId: ID!, $itemName: String!) { create_item (board_id: $boardId, item_name: $itemName) { id } }'
             res_create = requests.post(monday_url, json={"query": query_create, "variables": {"boardId": BOARD_STATS, "itemName": today_name}}, headers=get_monday_headers(), verify=False)
             today_item_id = res_create.json().get('data', {}).get('create_item', {}).get('id')
 
-        # מדביק את המספר בתוך השורה הקיימת
+        # מדביק את המספר המעודכן בתוך השורה
         if today_item_id:
             query_update = 'mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id } }'
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        result_msg = f"Evening sync complete! Added {sent_count} names (QR ONLY). Found and updated existing stats board row with {total_unique_visitors} visitors."
+        result_msg = f"Evening sync complete! Added {sent_count} NEW names (QR ONLY). Total unique visitors for today: {total_unique_visitors}."
         return result_msg, 200
 
     except Exception as e:
