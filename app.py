@@ -1,14 +1,11 @@
-import os
 import traceback
 import json
 import warnings
 import datetime
-import openpyxl
 import requests
 import urllib3
 from flask import Flask
 
-warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
@@ -55,19 +52,11 @@ def morning_setup():
 @app.route('/daily-sync')
 def daily_sync():
     try:
-        output_dir = "temp_downloads"
-        os.makedirs(output_dir, exist_ok=True)
-
         tz = datetime.timezone(datetime.timedelta(hours=3))
         now = datetime.datetime.now(tz)
         
         today_name = now.strftime("%d/%m/%Y")
         today_date_excel_format = now.strftime("%Y-%m-%d")
-        
-        # *** רשת רחבה: מושכים נתונים של 14 ימים אחורה, ללא סינון שיטת פתיחה! ***
-        start_range = now - datetime.timedelta(days=14)
-        start_ts = int(start_range.timestamp() * 1000)
-        end_ts = int(now.timestamp() * 1000)
         
         session = requests.Session()
         login_res = session.post(
@@ -80,44 +69,33 @@ def daily_sync():
         if not token: 
             return f"DEBUG ERROR: DNAKE Login failed. Response: {login_res.text}", 200
 
-        page_no = 1
-        all_rows_content = []
+        all_records = []
         
-        while True:
-            export_res = session.get(
-                'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/exportDeviceOpendoorLogCsv',
+        # מושכים נתונים ישירות מה-API החי (ללא אקסל) - 5 העמודים האחרונים (500 רשומות)
+        for page_no in range(1, 6):
+            page_res = session.get(
+                'https://eu-api-cloud.ss-iot.com/admin-api/business/device-opendoor-log/page',
                 headers={'Authorization': f'Bearer {token}', 'Project-Id': '2051211421803474944', 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US'},
-                params={'pageNo': str(page_no), 'pageSize': '1000', 'unlockTime[0]': start_ts, 'unlockTime[1]': end_ts},
+                params={'pageNo': str(page_no), 'pageSize': '100', 'unlockResult': '0'},
                 verify=False
             )
             
-            content_size = len(export_res.content)
-            
-            if "derived no data" in export_res.text:
-                break 
-            elif content_size < 150 or "code" in export_res.text:
-                break 
-            else:
-                temp_filename = os.path.join(output_dir, f"page_{page_no}.xlsx")
-                with open(temp_filename, "wb") as f: f.write(export_res.content)
+            try:
+                data = page_res.json()
+                records = data.get('data', {})
+                if isinstance(records, dict):
+                    records = records.get('list', [])
                 
-                try:
-                    wb = openpyxl.load_workbook(temp_filename)
-                    rows = list(wb.active.iter_rows(values_only=True))
-                    os.remove(temp_filename)
-                    
-                    if not rows: break
-                    if page_no == 1:
-                        all_rows_content.extend(rows)
-                    else:
-                        all_rows_content.extend(rows[1:])
-                        
-                    if len(rows) < 1000: break
-                    page_no += 1
-                    
-                except Exception as ex:
-                    if os.path.exists(temp_filename): os.remove(temp_filename)
+                if not records:
                     break
+                    
+                all_records.extend(records)
+                
+                if len(records) < 100:
+                    break # הגענו לעמוד האחרון
+            except Exception as e:
+                print(f"Failed to parse JSON on page {page_no}: {str(e)}")
+                break
 
         monday_url = "https://api.monday.com/v2"
         seen_today = set() 
@@ -125,32 +103,51 @@ def daily_sync():
         names_found_in_dnake_today = set()
         debug_dates_found_total = set()
         
-        if len(all_rows_content) > 1:
-            for row in all_rows_content[1:]:
-                if not row or len(row) < 6 or row[0] is None: continue
+        # עיבוד הנתונים
+        for rec in all_records:
+            ut = rec.get('unlockTime')
+            user_name = rec.get('userName') or rec.get('personName') or rec.get('name')
+            
+            if not ut or not user_name:
+                continue
                 
-                raw_date = row[0].strftime("%Y-%m-%d") if isinstance(row[0], datetime.datetime) else str(row[0]).split(' ')[0]
-                debug_dates_found_total.add(raw_date)
+            # חילוץ התאריך מתוך הנתון (יכול להיות טקסט או מספר)
+            raw_date = None
+            if isinstance(ut, str) and '-' in ut:
+                raw_date = ut.split(' ')[0]
+            elif isinstance(ut, (int, float)):
+                if ut > 9999999999: # Timestamp במילישניות
+                    dt = datetime.datetime.fromtimestamp(ut / 1000.0)
+                else:
+                    dt = datetime.datetime.fromtimestamp(ut)
+                raw_date = dt.strftime('%Y-%m-%d')
                 
-                if raw_date != today_date_excel_format:
-                    continue
+            if not raw_date:
+                continue
                 
-                if row[5] is None: continue
-                user_name = str(row[5]).strip()
-                names_found_in_dnake_today.add(user_name) 
+            debug_dates_found_total.add(raw_date)
+            
+            # מסננים רק את היום!
+            if raw_date != today_date_excel_format:
+                continue
                 
-                if user_name in seen_today: continue
+            user_name = str(user_name).strip()
+            names_found_in_dnake_today.add(user_name) 
+            
+            if user_name in seen_today: continue
 
-                query_log = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
-                vars_log = {"boardId": BOARD_LOGS, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
-                
-                res = requests.post(monday_url, json={"query": query_log, "variables": vars_log}, headers=get_monday_headers(), verify=False)
-                if "errors" not in res.text:
-                    sent_count += 1
-                    seen_today.add(user_name) 
+            # שליחה למאנדיי (יומן כניסות)
+            query_log = 'mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) { create_item (board_id: $boardId, item_name: $itemName, column_values: $columnValues) { id } }'
+            vars_log = {"boardId": BOARD_LOGS, "itemName": user_name, "columnValues": json.dumps({"date_mm0kk5yt": {"date": raw_date}, "color_mm4nb4ob": {"label": "תחבר"}})}
+            
+            res = requests.post(monday_url, json={"query": query_log, "variables": vars_log}, headers=get_monday_headers(), verify=False)
+            if "errors" not in res.text:
+                sent_count += 1
+                seen_today.add(user_name) 
                     
         total_unique_visitors = len(seen_today)
 
+        # עדכון סטטיסטיקה במאנדיי
         query_find = 'query { boards(ids: %s) { items_page(limit: 100) { items { id name } } } }' % BOARD_STATS
         res_find = requests.post(monday_url, json={"query": query_find}, headers=get_monday_headers(), verify=False)
         items = res_find.json().get('data', {}).get('boards', [{}])[0].get('items_page', {}).get('items', [])
@@ -171,12 +168,13 @@ def daily_sync():
             vars_update = {"boardId": BOARD_STATS, "itemId": today_item_id, "columnValues": json.dumps({"numeric_mm69bgft": str(total_unique_visitors)})}
             requests.post(monday_url, json={"query": query_update, "variables": vars_update}, headers=get_monday_headers(), verify=False)
 
-        # יצירת הדו"ח הסופי עם כל הנתונים
+        # דו"ח סיום
         result_msg = (
             f"Evening sync complete! Added {sent_count} names. Updated stats board with {total_unique_visitors} visitors.\n\n"
             f"--- DEBUG REPORT ---\n"
-            f"Total rows downloaded (last 14 DAYS!): {len(all_rows_content)}\n"
-            f"All dates found in file: {list(debug_dates_found_total)}\n"
+            f"API Endpoint Used: DIRECT JSON (Bye bye Excel!)\n"
+            f"Total raw records fetched: {len(all_records)}\n"
+            f"Dates found in recent records: {list(debug_dates_found_total)}\n"
             f"Names found specifically for today ({today_date_excel_format}): {list(names_found_in_dnake_today)}"
         )
         return result_msg, 200
