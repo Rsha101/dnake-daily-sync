@@ -13,8 +13,8 @@ app = Flask(__name__)
 MONDAY_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjYyMzIxMjUxOSwiYWFpIjoxMSwidWlkIjo5NzYwMTM1NywiaWFkIjoiMjAyNi0wMi0xOVQwOTowODozMS4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjkzNzUzNDYsInJnbiI6ImV1YzEifQ.EsITDIb08RaofyL9eIJae6eFJ_zBUiOBeCugjSMqoDE"
 BOARD_LOGS = "5091812790"     
 BOARD_STATS = "5091542066"    
-USERNAME = "shahar_ro@mail.tel-aviv.gov.il"
-PASSWORD = "Rr304050!"
+USERNAME = "haratzif@gmail.com"
+PASSWORD = "1b1GkgaQ"
 
 def get_monday_headers():
     return {"Authorization": MONDAY_TOKEN, "Content-Type": "application/json", "API-Version": "2023-10"}
